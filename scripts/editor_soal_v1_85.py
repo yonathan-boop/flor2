@@ -450,7 +450,103 @@ def _remap_relationships(src_doc, dst_doc, element):
                 pass
 
 
-def _clone_special_para(src_para, doc_new, strip_number=False):
+def create_sect_pr(cols_num=1, cols_space_twips=720):
+    """Buat elemen <w:sectPr> kontinu untuk arsitektur seksi kolom seimbang (standar Hermes)."""
+    sectPr = OxmlElement('w:sectPr')
+    t = OxmlElement('w:type')
+    t.set(qn('w:val'), 'continuous')
+    sectPr.append(t)
+    sz = OxmlElement('w:pgSz')
+    sz.set(qn('w:w'), '12240')
+    sz.set(qn('w:h'), '18720')
+    sectPr.append(sz)
+    mar = OxmlElement('w:pgMar')
+    mar.set(qn('w:top'), '283')
+    mar.set(qn('w:right'), '567')
+    mar.set(qn('w:bottom'), '340')
+    mar.set(qn('w:left'), '567')
+    mar.set(qn('w:header'), '720')
+    mar.set(qn('w:footer'), '720')
+    mar.set(qn('w:gutter'), '0')
+    sectPr.append(mar)
+    cols = OxmlElement('w:cols')
+    if cols_num > 1:
+        cols.set(qn('w:num'), str(cols_num))
+    cols.set(qn('w:space'), str(cols_space_twips))
+    sectPr.append(cols)
+    grid = OxmlElement('w:docGrid')
+    grid.set(qn('w:linePitch'), '360')
+    sectPr.append(grid)
+    return sectPr
+
+
+def set_document_defaults_tahoma(doc):
+    """Lapis 2 OOXML: Atur docDefaults pada styles.xml ke Tahoma 11 pt solid black."""
+    try:
+        styles_el = doc.styles.element
+        dd = styles_el.find(qn('w:docDefaults'))
+        if dd is None:
+            dd = OxmlElement('w:docDefaults')
+            styles_el.insert(0, dd)
+        rprd = dd.find(qn('w:rPrDefault'))
+        if rprd is None:
+            rprd = OxmlElement('w:rPrDefault')
+            dd.append(rprd)
+        rpr = rprd.find(qn('w:rPr'))
+        if rpr is None:
+            rpr = OxmlElement('w:rPr')
+            rprd.append(rpr)
+        rf = rpr.find(qn('w:rFonts'))
+        if rf is None:
+            rf = OxmlElement('w:rFonts')
+            rpr.append(rf)
+        rf.set(qn('w:ascii'), 'Tahoma')
+        rf.set(qn('w:hAnsi'), 'Tahoma')
+        rf.set(qn('w:cs'), 'Tahoma')
+        sz = rpr.find(qn('w:sz'))
+        if sz is None:
+            sz = OxmlElement('w:sz')
+            rpr.append(sz)
+        sz.set(qn('w:val'), '22')
+        color = rpr.find(qn('w:color'))
+        if color is None:
+            color = OxmlElement('w:color')
+            rpr.append(color)
+        color.set(qn('w:val'), '000000')
+    except Exception:
+        pass
+
+
+def standardize_run_elements(p, font_size_pt=11.0):
+    """Lapis 4 OOXML: Pastikan seluruh elemen run (<w:r>) seragam Tahoma dan #000000 murni."""
+    for r_el in p._p.iter(qn('w:r')):
+        rpr = r_el.find(qn('w:rPr'))
+        if rpr is None:
+            rpr = OxmlElement('w:rPr')
+            r_el.insert(0, rpr)
+        rf = rpr.find(qn('w:rFonts'))
+        if rf is None:
+            rf = OxmlElement('w:rFonts')
+            rpr.append(rf)
+        rf.set(qn('w:ascii'), 'Tahoma')
+        rf.set(qn('w:hAnsi'), 'Tahoma')
+        rf.set(qn('w:cs'), 'Tahoma')
+        sz = rpr.find(qn('w:sz'))
+        if sz is None:
+            sz = OxmlElement('w:sz')
+            rpr.append(sz)
+        sz.set(qn('w:val'), str(int(font_size_pt * 2)))
+        color_el = rpr.find(qn('w:color'))
+        if color_el is None:
+            color_el = OxmlElement('w:color')
+            rpr.append(color_el)
+        color_el.set(qn('w:val'), '000000')
+        for attr in [qn('w:themeColor'), qn('w:themeTint'), qn('w:themeShade')]:
+            if attr in color_el.attrib:
+                del color_el.attrib[attr]
+
+
+def _clone_special_para(src_para, doc_new, strip_number=False, font_size=11.0):
     p = doc_new.add_paragraph()
     for child in src_para._p:
         if child.tag == qn('w:pPr'):
@@ -467,6 +563,7 @@ def _clone_special_para(src_para, doc_new, strip_number=False):
                 if new != t.text:
                     t.text = new
                     break
+    standardize_run_elements(p, font_size_pt=font_size)
     return p
 
 
@@ -558,15 +655,22 @@ def create_clean_doc_with_master_kop(tpl_path, unit, kelas_str, mapel, hari_tgl,
                     for r_i, target_val in [(0, mapel), (1, hari_tgl), (2, kelas_str)]:
                         c = t0.rows[r_i].cells[4]
                         if c.text.strip() != target_val:
-                            c.text = target_val
-                            for p in c.paragraphs:
-                                for r in p.runs:
-                                    r.font.name = 'Tahoma'
-                                    r.font.size = Pt(11.0)
-                                    r.font.color.rgb = docx.shared.RGBColor(0, 0, 0)
-            while doc.paragraphs and not doc.paragraphs[0].text.strip():
-                p = doc.paragraphs[0]._p
-                p.getparent().remove(p)
+                            p = c.paragraphs[0]
+                            for child in list(p._p):
+                                if child.tag != qn('w:pPr'):
+                                    p._p.remove(child)
+                            for extra_p in list(c.paragraphs[1:]):
+                                c._tc.remove(extra_p._p)
+                            r = p.add_run(target_val)
+                            set_run_tahoma(r, 11.0, bold=False, color_hex="000000")
+            set_document_defaults_tahoma(doc)
+            paras = list(doc.paragraphs)
+            if not paras:
+                doc.add_paragraph()
+            else:
+                for p in paras[1:]:
+                    if not p.text.strip():
+                        p._p.getparent().remove(p._p)
             return doc
         finally:
             if owned_word:
@@ -588,8 +692,27 @@ def create_clean_doc_with_master_kop(tpl_path, unit, kelas_str, mapel, hari_tgl,
         p_dummy = doc.add_paragraph()
         p_dummy._p.addprevious(tbl_elem)
         p_dummy._p.getparent().remove(p_dummy._p)
-        while doc.paragraphs and not doc.paragraphs[0].text.strip():
-            doc.paragraphs[0]._p.getparent().remove(doc.paragraphs[0]._p)
+        if doc.tables:
+            t0 = doc.tables[0]
+            if len(t0.rows) >= 3 and len(t0.rows[0].cells) >= 5:
+                for r_i, target_val in [(0, mapel), (1, hari_tgl), (2, kelas_str)]:
+                    c = t0.rows[r_i].cells[4]
+                    p = c.paragraphs[0]
+                    for child in list(p._p):
+                        if child.tag != qn('w:pPr'):
+                            p._p.remove(child)
+                    for extra_p in list(c.paragraphs[1:]):
+                        c._tc.remove(extra_p._p)
+                    r = p.add_run(target_val)
+                    set_run_tahoma(r, 11.0, bold=False, color_hex="000000")
+        set_document_defaults_tahoma(doc)
+        paras = list(doc.paragraphs)
+        if not paras:
+            doc.add_paragraph()
+        else:
+            for p in paras[1:]:
+                if not p.text.strip():
+                    p._p.getparent().remove(p._p)
         return doc
     finally:
         try:
@@ -604,31 +727,36 @@ def apply_p0_1pt_gap_fix(doc):
     Trik 1pt P0: Paragraf transisi continuous section break tepat di bawah kop
     disetel ke 1 pt exact agar judul seksi pertama menempel rapat di bawah kop tanpa celah.
     """
-    if doc.paragraphs and not doc.paragraphs[0].text.strip():
-        p0 = doc.paragraphs[0]
-        p0_pr = p0._p.get_or_add_pPr()
-        sp = p0_pr.find(qn('w:spacing'))
-        if sp is None:
-            sp = OxmlElement('w:spacing')
-            p0_pr.append(sp)
-        sp.set(qn('w:before'), '0')
-        sp.set(qn('w:after'), '0')
-        sp.set(qn('w:line'), '20')
-        sp.set(qn('w:lineRule'), 'exact')
-        rpr = p0_pr.find(qn('w:rPr'))
-        if rpr is None:
-            rpr = OxmlElement('w:rPr')
-            p0_pr.append(rpr)
-        sz = rpr.find(qn('w:sz'))
-        if sz is None:
-            sz = OxmlElement('w:sz')
-            rpr.append(sz)
-        sz.set(qn('w:val'), '2')
-        szCs = rpr.find(qn('w:szCs'))
-        if szCs is None:
-            szCs = OxmlElement('w:szCs')
-            rpr.append(szCs)
-        szCs.set(qn('w:val'), '2')
+    if not doc.paragraphs:
+        doc.add_paragraph()
+    p0 = doc.paragraphs[0]
+    p0_pr = p0._p.get_or_add_pPr()
+    sp = p0_pr.find(qn('w:spacing'))
+    if sp is None:
+        sp = OxmlElement('w:spacing')
+        p0_pr.append(sp)
+    sp.set(qn('w:before'), '0')
+    sp.set(qn('w:after'), '0')
+    sp.set(qn('w:line'), '20')
+    sp.set(qn('w:lineRule'), 'exact')
+    rpr = p0_pr.find(qn('w:rPr'))
+    if rpr is None:
+        rpr = OxmlElement('w:rPr')
+        p0_pr.append(rpr)
+    sz = rpr.find(qn('w:sz'))
+    if sz is None:
+        sz = OxmlElement('w:sz')
+        rpr.append(sz)
+    sz.set(qn('w:val'), '2')
+    szCs = rpr.find(qn('w:szCs'))
+    if szCs is None:
+        szCs = OxmlElement('w:szCs')
+        rpr.append(szCs)
+    szCs.set(qn('w:val'), '2')
+    old_sect = p0_pr.find(qn('w:sectPr'))
+    if old_sect is not None:
+        p0_pr.remove(old_sect)
+    p0_pr.append(create_sect_pr(cols_num=1, cols_space_twips=720))
 
 
 # ============================================================
@@ -667,7 +795,7 @@ def render_content_block(doc_new, raw_paras, is_low_grade, font_size, ls_val, sa
 
         # Gambar standalone tanpa teks -> Left 0.65 cm, Hanging 0.0 cm
         if has_draw and not txt:
-            p_img = _clone_special_para(p_raw, doc_new, strip_number=False)
+            p_img = _clone_special_para(p_raw, doc_new, strip_number=False, font_size=font_size)
             set_para_ind(p_img, left_cm=0.65, hanging_cm=0.0, space_before_pt=0, space_after_pt=1, line_spacing=1.0)
             p_img.alignment = WD_ALIGN_PARAGRAPH.LEFT
             continue
@@ -694,11 +822,22 @@ def render_content_block(doc_new, raw_paras, is_low_grade, font_size, ls_val, sa
                 set_para_ind(p_h, left_cm=0.0, hanging_cm=0.0, space_before_pt=0, space_after_pt=2, line_spacing=1.0)
                 is_first_heading = False
             else:
-                # Judul 2+: Jeda seksi tegas di atasnya dengan tepat 1 enter bersih
+                # Judul 2+: Jeda seksi tegas di atasnya dengan tepat 1 enter bersih + penyeimbang kolom kontinu
+                p_break = doc_new.add_paragraph()
+                p_break_pr = p_break._p.get_or_add_pPr()
+                sp_b = OxmlElement('w:spacing')
+                sp_b.set(qn('w:before'), '0')
+                sp_b.set(qn('w:after'), '0')
+                sp_b.set(qn('w:line'), '20')
+                sp_b.set(qn('w:lineRule'), 'exact')
+                p_break_pr.append(sp_b)
+                p_break_pr.append(create_sect_pr(cols_num=2, cols_space_twips=284))
+
                 p_enter = doc_new.add_paragraph()
                 set_para_ind(p_enter, left_cm=0.0, hanging_cm=0.0, space_before_pt=0, space_after_pt=0, line_spacing=1.0)
                 p_h = doc_new.add_paragraph()
                 set_para_ind(p_h, left_cm=0.0, hanging_cm=0.0, space_before_pt=0, space_after_pt=2, line_spacing=1.0)
+                p_h._p.get_or_add_pPr().append(create_sect_pr(cols_num=1, cols_space_twips=720))
 
             r_h = p_h.add_run(txt)
             set_run_tahoma(r_h, 11.5 if not is_low_grade else 12.0, bold=True)
@@ -810,7 +949,7 @@ def render_content_block(doc_new, raw_paras, is_low_grade, font_size, ls_val, sa
 
         # Khusus soal bergambar / ber-equation
         if special:
-            p_item = _clone_special_para(p_raw, doc_new, strip_number=bool(explicit_num))
+            p_item = _clone_special_para(p_raw, doc_new, strip_number=bool(explicit_num), font_size=font_size)
             if should_number:
                 set_para_ind(p_item, left_cm=0.65, hanging_cm=0.65, space_before_pt=0, space_after_pt=sa_val, line_spacing=ls_val)
                 _set_question_grid_tab(p_item)
@@ -854,6 +993,16 @@ def render_content_block(doc_new, raw_paras, is_low_grade, font_size, ls_val, sa
             r_a = p_ans.add_run("Jb :\t................................................................................")
             set_run_tahoma(r_a, font_size, bold=False)
 
+    # Arsitektur Seksi 6 (Seksi Akhir): Mengalir kembali dalam 2 kolom
+    body_sect = doc_new._body._body.sectPr
+    if body_sect is not None:
+        cols = body_sect.find(qn('w:cols'))
+        if cols is None:
+            cols = OxmlElement('w:cols')
+            body_sect.append(cols)
+        cols.set(qn('w:num'), '2')
+        cols.set(qn('w:space'), '284')
+
 
 # ============================================================
 # PIPELINE UTAMA
@@ -861,7 +1010,11 @@ def render_content_block(doc_new, raw_paras, is_low_grade, font_size, ls_val, sa
 def proses_naskah_v1_84(raw_docx_path, out_docx_path, tpl_docx_path=None, folder_name="", logo_path=None, mode="auto", preview=False):
     if not tpl_docx_path or not os.path.exists(tpl_docx_path):
         candidates = [
+            os.path.join(os.path.dirname(__file__), "..", "templates", "SD SWASTA METHODIST.docx"),
+            os.path.join(os.path.dirname(__file__), "templates", "SD SWASTA METHODIST.docx"),
+            os.path.join(os.path.dirname(__file__), "SD SWASTA METHODIST.docx"),
             os.path.join(os.path.dirname(__file__), "kop-methodist.docx"),
+            r"C:\Users\yonat\Desktop\Soal Ujian Semester I T.P.2026-2027\SD SWASTA METHODIST.docx",
             r"C:\Users\yonat\ANTIGRAVITY\COMMON\assets\kop-methodist.docx",
             os.path.expandvars(r"%USERPROFILE%\Desktop\tempat kerja Antigravity\SD SWASTA METHODIST.docx"),
             r"C:\Users\yonat\OneDrive\Desktop\latihann\SD SWASTA METHODIST.docx",
@@ -940,6 +1093,9 @@ def proses_naskah_v1_84(raw_docx_path, out_docx_path, tpl_docx_path=None, folder
 
             render_content_block(doc_new, raw_paras, is_low_grade, font_size, ls_val, sa_val, mapel)
 
+        # Lapis 4 OOXML: Sapuan universal memastikan 100% runs berfont Tahoma 11 pt (#000000 murni)
+        for p in doc_new.paragraphs:
+            standardize_run_elements(p, font_size_pt=font_size)
         doc_new.save(out_docx_path)
 
         # 3. Otomatis Verifikasi & Preview jika diminta
